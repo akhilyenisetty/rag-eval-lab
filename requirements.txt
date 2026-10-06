@@ -1,0 +1,21 @@
+# Requires Python 3.10+ (tested on 3.11, arm64). Python 3.9 can't resolve these.
+
+# Stage 1 (ingestion/retrieval):
+chromadb>=0.5
+sentence-transformers>=3.0
+python-dotenv>=1.0
+pypdf>=4.0             # load PDF files
+python-docx>=1.1       # load .docx files
+
+# Added in later stages (kept here so one install covers the whole project):
+anthropic>=0.39        # Stage 2: generation (or use openai)
+openai>=1.40,<2        # Stage 2: alternative provider (<2: ragas -> instructor needs openai 1.x)
+ragas>=0.2             # Stage 3: evaluation metrics
+datasets>=2.19         # Stage 3: Ragas eval dataset format
+arize-phoenix>=13,<14  # Stage 4: tracing / observability (14+ needs openai>=3, clashes with ragas)
+
+# Compatibility pins (as of 2026-10-06) — without these the resolver backtracks for 30+ min
+# or installs versions that fail on import:
+langchain-community<0.4        # ragas 0.4.3 imports chat_models.vertexai, removed in 0.4
+arize-phoenix-evals>=2.12,<3   # phoenix 13 imports phoenix.evals.models, removed in evals 3
+graphql-core==3.3.0a12         # phoenix 13 pins strawberry 0.287.3, which breaks on graphql-core >=3.3.0a14
