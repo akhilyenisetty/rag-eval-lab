@@ -125,6 +125,27 @@ Haiku's remaining miss is h08 ("Who gets to see customer information?"), decline
 
 The prompt was not tuned further for h08. Rewriting a prompt until every golden question passes fits it to these 12 questions rather than to real users; the better response is more questions of that type.
 
+## Quality gate
+
+`python -m rag_eval.gate` (run on every pull request by `.github/workflows/eval.yml`) turns the evaluation into a pass/fail check. The design follows from the noise measured above.
+
+- **Pool both golden sets.** 27 questions instead of 12. This matters most for refusals: the hard set has only 2 unanswerable questions, so one flip there moves the refusal rate by 50 points.
+- **Run twice and pool the answers,** halving the weight of any single flip.
+- **Set thresholds just under the baseline,** with room for the noise observed:
+
+| Metric | Sonnet baseline | Gate | Tolerates over 2 runs |
+|---|---|---|---|
+| faithfulness | 1.0 | >= 0.95 | 2 unsupported answers of 54 |
+| correctness | 1.0 | >= 0.90 | 4 wrong answers of 44 |
+| correct_refusal_rate | 1.0 | >= 0.90 | 1 missed refusal of 10 |
+| false_refusal_rate | 0.0 | <= 0.10 | 4 false refusals of 44 |
+| retrieval_hit_rate | 1.0 | >= 0.95 | Deterministic; near-strict |
+| mrr | 0.86 | >= 0.80 | Small margin for float differences across machines |
+
+What the gate can and can't do: it catches real regressions (a broken prompt, a retrieval change that buries the right chunks, a much weaker model). It cannot detect a one-question change, which at this sample size is indistinguishable from noise. Finer detection needs a larger golden set, not tighter thresholds; tightening them would only make the gate fail at random until people stop trusting it.
+
+A full gate run makes about 108 LLM calls with Sonnet 5.5.
+
 ## Findings
 
 1. **The judge must see exactly what the generator saw.** The generator received chunks labeled with their source file; the judge received bare text. It then graded every correct "Acme says..." attribution as unsupported. This was invisible with one document and dominated the scores with five.

@@ -1,5 +1,7 @@
 # rag-eval-lab
 
+[![RAG eval gate](https://github.com/akhilyenisetty/rag-eval-lab/actions/workflows/eval.yml/badge.svg)](https://github.com/akhilyenisetty/rag-eval-lab/actions/workflows/eval.yml)
+
 A retrieval-augmented generation (RAG) assistant for your own documents, built **evaluation-first**: every behavior it claims is backed by a repeatable test, and every answer can be traced end to end.
 
 Ask a question in plain English. The app retrieves the most relevant passages from your files, answers **only** from those passages with `[n]` citations, attributes facts to the right document when several disagree, and says *"I don't know based on the provided documents"* when the answer isn't there.
@@ -74,6 +76,7 @@ Full command reference, adding your own files, tracing setup, and troubleshootin
 - **Honest refusals.** Out-of-scope questions get "I don't know" instead of a guess, with an optional distance cutoff that skips the LLM call entirely.
 - **Pluggable LLM.** Anthropic or OpenAI behind one interface; switching models or providers is a config change, and the eval shows what each choice costs in quality and latency.
 - **Evaluation harness.** Golden question sets, source-aware retrieval metrics, an LLM judge, and JSON reports for comparing runs.
+- **Quality gate in CI.** Every pull request runs the evals on GitHub Actions and fails if faithfulness, correctness, refusals, or retrieval drop below thresholds set with run-to-run noise in mind.
 - **Tracing.** Optional OpenTelemetry tracing to Arize Phoenix: every question shows the retrieved chunks, exact prompt, response, and token counts.
 
 ## Project structure
@@ -91,14 +94,18 @@ rag-eval-lab/
 │   ├── generate.py     # grounded prompt, citations, refusals
 │   ├── ask.py          # command-line Q&A
 │   ├── evaluate.py     # eval harness and LLM judge
+│   ├── gate.py         # CI quality gate: pooled runs vs. thresholds
 │   └── tracing.py      # optional Phoenix / OpenInference tracing
 ├── data/
 │   ├── docs/           # knowledge base (sample handbook + distractor docs)
-│   └── eval/           # golden question sets
+│   └── eval/           # golden question sets and gate thresholds
 ├── docs/
 │   ├── USAGE.md
 │   └── EVALUATION.md
+├── .github/workflows/
+│   └── eval.yml        # runs the gate on every pull request
 ├── requirements.txt
+├── requirements-tracing.txt   # optional: Phoenix server
 └── .env.example
 ```
 
@@ -123,7 +130,7 @@ rag-eval-lab/
 - [ ] Contextual chunk headers (prefix each chunk with its document title) to lift MRR
 - [ ] Score saved runs with Ragas and compare against the built-in metrics
 - [ ] Judge negative controls and a judge from a different provider
-- [ ] CI gate: fail a pull request if faithfulness or refusal accuracy drops
+- [x] CI gate: fail a pull request if quality drops below thresholds
 - [ ] Larger golden set
 
 ## Tech stack
