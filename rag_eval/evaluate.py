@@ -17,6 +17,7 @@ retrieved_contexts, reference) so Ragas can score the same runs later.
 """
 import argparse
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,17 +25,29 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rag_eval import config
 from rag_eval.generate import answer
-from rag_eval.llm import get_llm
+from rag_eval.llm import AnthropicLLM, get_llm
+from rag_eval import llm as llm_mod
 from rag_eval.retrieve import TOP_K
+from rag_eval.tracing import set_attr, span
 
 ROOT = Path(getattr(config, "ROOT", Path.cwd()))
 GOLDEN_PATH = ROOT / "data" / "eval" / "golden.jsonl"
 RESULTS_DIR = ROOT / "results"
 
+# The judge is pinned to its own model so that changing the generator model
+# doesn't silently change the grader too. Compare generators with the judge fixed.
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", getattr(config, "JUDGE_MODEL", "claude-sonnet-5-5"))
+
 JUDGE_SYSTEM = """You grade answers from a question-answering system that must answer only from retrieved context.
 
 Return ONLY a JSON object, no other text, in this exact shape:
-{"correct": true | false | null, "faithful": true | false, "reason": "<one short sentence>"}
+{"answer_type": "full" | "partial" | "declined", "correct": true | false | null, "faithful": true | false, "reason": "<one short sentence>"}
+
+"answer_type": "full" if the RESPONSE answers the question. "partial" if it answers part of it and
+says what is missing. "declined" if it does not answer the question as asked (for example, it says
+the documents don't contain the answer), even if it adds related context. Judge the behavior, not
+the wording: a response can decline without saying "I don't know", and can start with "I don't know"
+and still answer.
 
 "correct": true if the RESPONSE conveys the key facts in the REFERENCE answer (extra detail is fine
 if it is accurate). false if it is wrong, missing key facts, or contradicts the reference.
@@ -120,25 +133,58 @@ def judge(llm, question: str, reference: str, response: str,
         f"CONTEXT:\n{ctx or '(no context retrieved)'}\n\n"
         f"RESPONSE:\n{response}"
     )
-    return parse_json(llm.complete(JUDGE_SYSTEM, user))
+    return parse_json(llm.complete(JUDGE_SYSTEM, user, name="judge"))
 
 
 # ---------- running ----------
 
-def evaluate_one(item, k, max_distance, judge_llm) -> Dict[str, Any]:
+def evaluate_one(item, k, max_distance, judge_llm, run_id: str = "") -> Dict[str, Any]:
+    # One trace per eval question: the rag.answer trace plus the judge call
+    # nest under it, and session.id groups every question from this run.
+    with span(f"eval.{item['id']}", "CHAIN", input_value=item["question"]) as s:
+        set_attr(s, "session.id", run_id)
+        row = _evaluate_one(item, k, max_distance, judge_llm)
+        set_attr(s, "output.value", row["response"])
+        set_attr(s, "metadata", {
+            "id": row["id"], "type": item.get("type"), "k": k,
+            "retrieval_hit": row["retrieval_hit"], "rank": row["first_relevant_rank"],
+            "refused": row["refused"], "correct": row["correct"],
+            "faithful": row["faithful"], "judge_reason": row["judge_reason"],
+        })
+        return row
+
+
+def _evaluate_one(item, k, max_distance, judge_llm) -> Dict[str, Any]:
     t0 = time.perf_counter()
     result = answer(item["question"], k=k, max_distance=max_distance)
     latency = time.perf_counter() - t0
 
-    refused = is_refusal(result.answer)
     hit, rank = retrieval_metrics(result.contexts, result.sources,
                                   item.get("evidence", []), item.get("source"))
+    answerable = item.get("answerable", True)
 
     verdict: Dict[str, Any] = {}
-    # A refusal makes no claims, so there is nothing to judge (and no cost).
-    if judge_llm is not None and not refused:
+    if judge_llm is not None:
+        # The judge reads every answer, refusals included: it classifies the
+        # answer type (so refusal metrics measure behavior, not exact wording)
+        # and checks that any context added to a refusal is still faithful.
         verdict = judge(judge_llm, item["question"], item.get("reference", ""),
                         result.answer, result.contexts, result.sources)
+
+    answer_type = verdict.get("answer_type")
+    if answer_type in {"full", "partial", "declined"}:
+        refused = answer_type == "declined"
+        partial = answer_type == "partial"
+    else:  # no judge (or unparseable verdict): fall back to the phrase check
+        refused = is_refusal(result.answer)
+        partial = is_partial(result.answer)
+
+    if refused and answerable:
+        # Declining a question the documents DO answer is a wrong answer.
+        verdict["correct"] = False
+        verdict.setdefault("reason", "false refusal: question is answerable")
+    if not answerable:
+        verdict["correct"] = None  # unanswerable questions are scored by refusal rate
 
     return {
         "id": item["id"],
@@ -152,9 +198,10 @@ def evaluate_one(item, k, max_distance, judge_llm) -> Dict[str, Any]:
         "retrieval_hit": hit,
         "first_relevant_rank": rank,
         "refused": refused,
-        "partial": is_partial(result.answer),
+        "partial": partial,
+        "answer_type": answer_type,
         "correct": verdict.get("correct"),
-        "faithful": (True if refused else verdict.get("faithful")) if judge_llm is not None else None,
+        "faithful": verdict.get("faithful") if judge_llm is not None else None,
         "judge_reason": verdict.get("reason") or verdict.get("error"),
         "latency_s": round(latency, 2),
     }
@@ -195,13 +242,16 @@ def main() -> None:
     args = p.parse_args()
 
     items = load_golden(args.golden)
-    judge_llm = None if args.no_judge else get_llm()
+    judge_llm = None if args.no_judge else AnthropicLLM(model=JUDGE_MODEL)
+    run_id = f"eval_{datetime.now():%Y%m%d_%H%M%S}"
 
-    print(f"\nEvaluating {len(items)} questions  (k={args.k}, max_distance={args.max_distance})\n")
+    gen_model = llm_mod.ANTHROPIC_MODEL if llm_mod.PROVIDER == "anthropic" else llm_mod.OPENAI_MODEL
+    print(f"\nEvaluating {len(items)} questions  (k={args.k}, max_distance={args.max_distance})")
+    print(f"generator: {gen_model}   judge: {'off' if args.no_judge else JUDGE_MODEL}\n")
     print(f"{'id':<5} {'retr':>4} {'rank':>4} {'refused':>7} {'correct':>7} {'faithful':>8} {'secs':>5}")
     rows = []
     for item in items:
-        row = evaluate_one(item, args.k, args.max_distance, judge_llm)
+        row = evaluate_one(item, args.k, args.max_distance, judge_llm, run_id)
         rows.append(row)
         print(f"{row['id']:<5} {yn(row['retrieval_hit']):>4} {str(row['first_relevant_rank'] or '-'):>4} "
               f"{yn(row['refused']):>7} {yn(row['correct']):>7} {yn(row['faithful']):>8} {row['latency_s']:>5}")
@@ -223,9 +273,11 @@ def main() -> None:
                 print(f"      judge:  {r['judge_reason']}")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"eval_{datetime.now():%Y%m%d_%H%M%S}.json"
+    out = RESULTS_DIR / f"{run_id}.json"
     out.write_text(json.dumps({
         "settings": {"k": args.k, "max_distance": args.max_distance,
+                     "generator_model": gen_model,
+                     "judge_model": None if args.no_judge else JUDGE_MODEL,
                      "judge": not args.no_judge, "golden": str(args.golden)},
         "summary": summary,
         "rows": rows,

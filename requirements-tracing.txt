@@ -1,0 +1,3 @@
+arize-phoenix>=13,<14  # Stage 4: tracing / observability (14+ needs openai>=3, clashes with ragas)
+arize-phoenix-evals>=2.12,<3   # phoenix 13 imports phoenix.evals.models, removed in evals 3
+graphql-core==3.3.0a12         # phoenix 13 pins strawberry 0.287.3, which breaks on graphql-core >=3.3.0a14

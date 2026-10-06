@@ -23,4 +23,4 @@ TOP_K = int(os.getenv("TOP_K", "4"))
 
 # LLM for generation (used from Stage 2 on).
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")   # anthropic | openai
-LLM_MODEL = os.getenv("LLM_MODEL", "claude-3-5-haiku-20241022")
+LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-5-5")
