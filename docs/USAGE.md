@@ -210,7 +210,30 @@ To send traces somewhere other than local Phoenix, set `PHOENIX_COLLECTOR_ENDPOI
 
 If `RAG_TRACING=1` is set but the client isn't installed, the app prints a warning and runs normally without tracing.
 
-## 6. Troubleshooting
+## 6. Quality gate (CI)
+
+The gate runs both golden sets twice, pools every answer, and checks the pooled metrics against `data/eval/thresholds.json`. It exits with code 1 if any metric misses its threshold.
+
+```bash
+python -m rag_eval.gate            # full gate: 2 runs x 27 questions, about 108 LLM calls
+python -m rag_eval.gate --runs 1   # quicker local check
+```
+
+It prints a pass/fail table and the questions that failed in any run, and saves a report to `results/gate_<timestamp>.json`.
+
+### On GitHub
+
+`.github/workflows/eval.yml` runs the gate on every pull request that changes `rag_eval/`, `data/`, `requirements.txt`, or the workflow itself, and can be started by hand from the **Actions** tab (**RAG eval gate → Run workflow**). A failing gate marks the PR's check red; the metric table appears on the workflow run's summary page, and the full reports are attached as the `eval-results` artifact.
+
+One-time setup: in the repository on GitHub, go to **Settings → Secrets and variables → Actions → New repository secret**, name it `ANTHROPIC_API_KEY`, and paste your key. The workflow reads it from there; it is never written into the repository or shown in logs.
+
+To make a failing gate actually block merging, add a branch protection rule for `main` that requires the **eval** status check to pass.
+
+### Changing thresholds
+
+Thresholds sit just below the Sonnet 5.5 baseline, with room for run-to-run noise (the reasoning is in [EVALUATION.md](EVALUATION.md#quality-gate)). If you change the default model or add questions, re-run the gate a few times and re-check them. Lowering a threshold to make a red build pass defeats the gate; read the failing questions first.
+
+## 7. Troubleshooting
 
 | Error | Cause | Fix |
 |---|---|---|
@@ -220,4 +243,6 @@ If `RAG_TRACING=1` is set but the client isn't installed, the app prints a warni
 | `pip install` runs forever | Python 3.9 or old pip forcing dependency backtracking | Use Python 3.11 and `pip install --upgrade pip` |
 | `SameFileError` from `add` | File is already in `data/docs/` | Use `python -m rag_eval.ingest` for files already there |
 | `You are sending unauthenticated requests to the HF Hub` | Harmless warning from the embedding model download check | Ignore, or set `HF_TOKEN` |
+| Gate fails in CI with `ANTHROPIC_API_KEY is not set` | Repository secret missing, or the PR comes from a fork (forks don't receive secrets) | Add the secret; run the gate locally for fork PRs |
+| CI install takes very long or runs out of disk | A pinned `torch` in `requirements.txt` replaced the CPU build with the CUDA one | Don't pin `torch` in `requirements.txt`; the workflow installs the CPU build first |
 | No traces in Phoenix, or `Connection refused` on port 6006 | Server not running, or tracing off | Start `phoenix serve` in a second terminal and keep it open; check `RAG_TRACING=1`; the UI is on port 6006 |

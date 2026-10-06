@@ -1,0 +1,59 @@
+name: RAG eval gate
+
+# Runs the eval suite on every pull request that touches the pipeline, its
+# data, or its dependencies, and fails the check if quality drops below
+# data/eval/thresholds.json. Can also be started by hand from the Actions tab.
+on:
+  pull_request:
+    paths:
+      - "rag_eval/**"
+      - "data/**"
+      - "requirements.txt"
+      - ".github/workflows/eval.yml"
+  workflow_dispatch:
+
+# A new push to the same PR cancels the older run instead of paying for both.
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # The default Linux torch wheel bundles CUDA (gigabytes). The embedding
+      # model runs fine on CPU, so install the CPU-only build first.
+      - name: Install CPU-only PyTorch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-all-MiniLM-L6-v2
+
+      - name: Build vector index
+        run: python -m rag_eval.ingest
+
+      - name: Run eval gate
+        run: python -m rag_eval.gate
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: results/

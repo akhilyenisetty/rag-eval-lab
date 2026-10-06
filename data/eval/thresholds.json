@@ -1,0 +1,15 @@
+{
+  "golden_sets": ["data/eval/golden.jsonl", "data/eval/golden_hard.jsonl"],
+  "runs": 2,
+  "k": 4,
+  "min": {
+    "faithfulness": 0.95,
+    "correctness": 0.90,
+    "correct_refusal_rate": 0.90,
+    "retrieval_hit_rate": 0.95,
+    "mrr": 0.80
+  },
+  "max": {
+    "false_refusal_rate": 0.10
+  }
+}
